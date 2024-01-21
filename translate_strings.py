@@ -1,161 +1,234 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
-import openai
-from pprint import pprint
-import os
-from openai import OpenAI
-from tqdm import tqdm  
-from termcolor import colored
 import json
+from openai import OpenAI
+from collections import deque
+import os
+from pprint import pprint
 import tiktoken
+from tqdm import tqdm
+from termcolor import colored
 
+language_names = {
+        "en": "English",
+        "de": "German",
+        "es": "Spanish",
+        "fr": "French",
+        "it": "Italian",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "pt": "Portuguese",
+        "zh": "Chinese",
+        "ar": "Arabic",
+        "cs": "Czech",
+        "da": "Danish",
+        "fi": "Finnish",
+        "el": "Greek",
+        "hi": "Hindi",
+        "hu": "Hungarian",
+        # add more languages here
+}
+
+
+class LocalizationString:
+    def __init__(self, string, comment):
+        self.string = string
+        self.comment = comment
+
+    def __repr__(self):
+        return f"LocalizationString(value={self.string}, comment={self.comment})"
+
+    def __eq__(self, other):
+        return self.comment == other.comment and self.string == other.string
+    
+    def serialize(self):
+        return {
+            "string": self.string,
+            "comment": self.comment,
+        }
+    
 COST_PER_THOUSAND_TOKENS = 0.01  # $0.01 per 1k tokens
 model = "gpt-4-1106-preview"
-client = OpenAI(
-    # This is the default and can be omitted
-    api_key=os.environ.get("OPENAI_API_KEY"),
-)
-def estimate_tokens(text, source_lang, target_lang, app_context):
-    full_prompt = json.dumps(create_prompt(text, source_lang, target_lang, app_context))
-    encoding = tiktoken.encoding_for_model(model)
-    tokens = encoding.encode(full_prompt)
-    return len(tokens)
+
+def chunk_requests(requests, chunk_size):
+    for i in range(0, len(requests), chunk_size):
+        yield requests[i:i + chunk_size]
+
+def estimate_tokens(data, source_lang, target_lang):
+    tokens = []
+    for chunk in chunk_requests(data, 10):
+        full_prompt = json.dumps(create_prompt(source_lang, target_lang, chunk))
+        encoding = tiktoken.encoding_for_model(model)
+        tokens.extend(encoding.encode(full_prompt))
+    return len(tokens) * 2 # Account for response tokens
 
 def calculate_cost(token_count):
     # Calculate the cost based on the token count and cost per token
     return (token_count / 1000) * COST_PER_THOUSAND_TOKENS
 
-def create_prompt(text, source_lang, target_lang_code, app_context):
-    languages = {
-        "en": "English",
-        "es": "Spanish",
-        "fr": "French",
-        "de": "German",
-        "it": "Italian",
-        "ja": "Japanese",
-        "ko": "Korean",
-        "pt": "Portuguese",
-        "ru": "Russian",
-    }
-    target_lang = languages[target_lang_code]
-    prompt = f"Translate the following iOS app strings from {source_lang} to {target_lang}, keeping the format intact.\n{text}"
+def create_prompt(source_lang, target_lang, strings):
+    serialized = [string.serialize() for string in strings]
+
+    """
+    Creates a prompt for translation based on the source and target languages and the serialized strings.
+    """
+    app_context = ""
     system = f"""
-    You are translating strings from an app from English to {target_lang}. 
-    Do not translate the keys (left side of the = sign), only the values.
-    If the string is already in {target_lang}, and the meaning is not significantly different than the existing string, you can leave it as is.
+    You are translating strings from an app from {source_lang} to {target_lang}. 
     {app_context}
     """
+    prompt = f"Translate the \"string\" property in the following JSON  array from {source_lang} to {target_lang}."
+    prompt += " Use the \"comment\" property to understand the context of the string, if there is one.\n\n"
+    prompt += json.dumps(serialized) + "\n\nReturn a JSON object in the following format: {\"translations\": [{\"string\": \"<translated>\"}]}.\n\n"
+    
     messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ]
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt}
+    ]
+    
     return messages
 
-def translate_text(text, source_lang, target_lang_code, app_context, filename_comment):
-    messages = create_prompt(text, source_lang, target_lang_code, app_context)
-    tqdm.write(f"Translating chunk: {filename_comment}")
-    response = client.chat.completions.create(model="gpt-4-1106-preview", messages=messages)
-    tqdm.write(f"Finished translating chunk: {filename_comment}. Used {response.usage.total_tokens} tokens.")
-    return response.choices[0].message.content
-
-def parse_localization_file(file_path):
-    if not os.path.exists(file_path):
-        print(colored(f"Localization file not found: {file_path}", "red"))
-        return
-    with open(file_path, 'r', encoding='utf-8') as file:
-        lines = file.readlines()
-
-    localization_dict = {}
-    current_file = None
-
-    for line in lines:
-        line = line.strip()
-        if line.startswith('/*') and line.endswith('*/'):
-            current_file = line[2:-2].strip()
-        elif '=' in line:
-            key_value = line.split('=')
-            key = key_value[0].strip().strip('"')
-            value = key_value[1].strip().strip('";')
-            if current_file not in localization_dict:
-                localization_dict[current_file] = []
-            localization_dict[current_file].append({'key': key, 'value': value})
-    return localization_dict
-
-
-def write_translations(localization_dict, target_lang_code, app_context_path, target_directory):
-
-    if "lproj" in target_directory:
-        print(colored("Target directory should be the directory that contains the lproj directories, not the lproj directory itself", "red"))
-        return
-
-    if not os.path.exists(target_directory):
-        print(colored("Target directory not found", "red"))
-        return
-
-    directory = os.path.join(target_directory, f"{target_lang_code}.lproj")
-    if os.path.exists(directory):
-        print(colored(f"Target directory {directory} already exists. Overwrite? [y/n]", "yellow"))
-        response = input()
-        if response.lower() != 'y':
-            return
-    if not os.path.exists(app_context_path):
-        # create a context file from input
-        print(colored(f"App context file {app_context_path} not found. Create? [y/n]", "yellow"))
-        response = input()
-        if response.lower() != 'y':
-            print(colored("App context file not found. Add the app context file and try again.", "red"))
-            return
-        else:
-            print(colored("Describe the app you would like to localize. This helps the model understand the context of the strings:", "light_blue"))
-            app_context = input()
-            with open(app_context_path, 'w', encoding='utf-8') as file:
-                file.write(app_context)
-                print(colored(f"Created app context file at {app_context_path}", "green"))
-    with open(app_context_path, 'r', encoding='utf-8') as file:
-        app_context = file.read()
-    os.makedirs(directory, exist_ok=True)
+def translate_strings(openai_client, strings, source_lang, target_lang):
+    translations = []
     total_tokens = 0
-    for filename_comment, texts in localization_dict.items():
-        text = list(map(lambda text: f"\"{text['key']}\" = \"{text['value']}\";", texts))
-        joined = "\n".join(text)
-        total_tokens += estimate_tokens(joined, "English", target_lang_code, app_context)
 
-    total_cost = calculate_cost(total_tokens)
-    print(colored(f"Estimated total tokens: {total_tokens}", 'green'))
-    print(colored(f"Estimated total cost: ${total_cost:.2f}", 'green'))
-    
-    user_confirmation = input(colored("Do you want to proceed with the translation? (y/n): ", "yellow"))
-    if user_confirmation.lower() != 'y':
-        print(colored("Translation cancelled by the user.", 'red'))
-        return
+    # Preparing the list of chunks
+    chunks = list(chunk_requests(strings, 10))
 
-    with open(os.path.join(directory, "Localizable.strings"), 'w', encoding='utf-8') as file:
-        progress_bar = tqdm(localization_dict.items(), desc="Processing", unit="chunk")
-
-        # Wrap localization_dict.items() with tqdm for progress tracking
-        for filename_comment, texts in progress_bar:
-            text = list(map(lambda text: f"\"{text['key']}\" = \"{text['value']}\";", texts))
-
-            joined = "\n".join(text)
+    # Initialize tqdm with a description
+    with tqdm(chunks, desc="Translating chunks") as pbar:
+        for chunk in pbar:
+            messages = create_prompt(source_lang, target_lang, chunk)
             
-            translated_text = translate_text(joined, "English", target_lang_code, app_context, filename_comment)
-            file.write(f"/* {filename_comment} */\n{translated_text} \n\n")
-            tqdm.write(f"Wrote translated chunk to file: {filename_comment}")
-            progress_bar.set_description(f"Processing {filename_comment}")
+            response = openai_client.chat.completions.create(
+                model=model, 
+                messages=messages,
+                response_format={"type": "json_object"},
+            )
+            total_tokens += response.usage.total_tokens
+            parsed_response = json.loads(response.choices[0].message.content)
+            translations.extend(parsed_response.get("translations", []))
 
-def main():
-    parser = argparse.ArgumentParser(description="Localize iOS app strings")
-    parser.add_argument("--source_file", type=str, help="Path to the source localization file", required=True)
-    parser.add_argument("--target_dir", type=str, help="Path to the target strings resource directory", required=True)
-    parser.add_argument("--target_lang_code", type=str, help="Target language for translation", required=True)
-    parser.add_argument("--app_context", type=str, help="Path to the app context file that describes the app that the strings are from", required=False, default="app_context.txt")
-    parser.add_argument("--only_new", type=bool, help="Only translate strings that are not already in the target language", required=False, default=False)
-    args = parser.parse_args()
+            # Update the postfix with a custom message including "Total tokens used"
+            pbar.set_postfix_str(colored(f"Total tokens used: {total_tokens}.", "light_blue") + colored(f"Cost: ${calculate_cost(total_tokens):.2f}", "yellow"))
 
-    localization_data = parse_localization_file(args.source_file)
-    write_translations(localization_data, args.target_lang_code, args.app_context, args.target_dir)
+    return translations, total_tokens
+
+# Main function to handle the translation process
+def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_file, no_cost_prompt):
+
+    # Check if OPENAI_API_KEY is set
+    if "OPENAI_API_KEY" not in os.environ:
+        # If not, prompt the user to enter it
+        print(colored("OPENAI_API_KEY environment variable not set.", "yellow"))
+        print(colored("Please enter your OpenAI API key:", "yellow"))
+        api_key = input()
+    else:
+        api_key = os.environ["OPENAI_API_KEY"]
+
+    openai_client = OpenAI(
+        api_key=api_key,
+    )
+
+    with open(input_file, 'r') as file:
+        data = json.load(file)
+
+    strings_to_translate = []
+    paths = []
+
+    # Collect strings that need translation
+    for key, value in data["strings"].items():
+        localizations = value["localizations"]
+        comment = value.get("comment", "")  
+
+        source_localization = localizations.get(source_lang)
+        if target_lang not in localizations.keys():
+            if source_localization.get("variations") is None and source_localization.get("stringUnit") is not None:
+                string_value = source_localization.get("stringUnit").get("value")
+                strings_to_translate.append(LocalizationString(string_value, comment))
+                paths.append((key, target_lang, None))
+            elif source_localization.get("variations") is not None:
+                device_variations = source_localization["variations"]
+                for variation_key, variation_value in device_variations.items():
+                    for device, device_content in variation_value.items():
+                        string_value = device_content["stringUnit"]["value"]
+                        strings_to_translate.append(LocalizationString(string_value, comment))
+                        paths.append((key, target_lang, (variation_key, device)))
+    
+    if len(strings_to_translate) == 0:
+        print(colored("No strings to translate!", "green"))
+        return
+    
+    estimated_tokens = estimate_tokens(strings_to_translate, source_lang, target_lang)
+    target_file = input_file
+    if not overwrite_file and os.path.exists(input_file):
+        # prompt to overwrite the file
+        print(colored(f"Do you want to overwrite the existing .xcstrings file at {input_file}? (y/n)", "yellow"))
+        if input().lower() != "y":
+            # ask for a new file name
+            print(colored("Please enter a new file path to save the output:", "yellow"))
+            new_file_name = input()
+            target_file = new_file_name    
+
+    if not no_cost_prompt:
+        print(colored(f"Estimated cost for {estimated_tokens} tokens using {model}: ${calculate_cost(estimated_tokens):.2f}", "yellow"))
+        print(colored("Do you want to continue? (y/n)", "yellow"))
+        if input().lower() != "y":
+            print("Aborting...")
+            return
+    
+
+    translated_strings, total_tokens = translate_strings(openai_client, strings_to_translate, language_names[source_lang], language_names[target_lang])
+
+    print(colored(f"Total tokens used: {total_tokens}. Cost: ${calculate_cost(total_tokens):.2f}"))
+
+    for path, translation in zip(paths, translated_strings):
+
+        key, lang, variation_path = path
+        if "strings" not in data:
+            data["strings"] = {}
+        if key not in data["strings"]:
+            data["strings"][key] = {"localizations": {}}
+        if lang not in data["strings"][key]["localizations"]:
+            data["strings"][key]["localizations"][lang] = {}
+
+        if variation_path is None:
+            data["strings"][key]["localizations"][lang] = {
+                "stringUnit": {
+                    "value": translation.get("string"),
+                    "state": "translated",
+                }
+            }
+        else:
+            variation_key, device = variation_path
+
+            if "variations" not in data["strings"][key]["localizations"][lang]:
+                data["strings"][key]["localizations"][lang]["variations"] = {}
+
+            if variation_key not in data["strings"][key]["localizations"][lang]["variations"]:
+                data["strings"][key]["localizations"][lang]["variations"][variation_key] = {}
+
+
+            data["strings"][key]["localizations"][lang]["variations"][variation_key][device] = {
+                "stringUnit": {
+                    "value": translation.get("string"),
+                    "state": "translated",
+                }
+            }
+
+    with open(target_file, 'w') as file:
+        json.dump(data, file, indent=4)
+
+    print(f"Translation completed. Output saved to {target_file}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Translate .xcstrings files using OpenAI.")
+    parser.add_argument("--input-file", type=str, help="Input .xcstrings file to be translated.", required=True)
+    parser.add_argument("--target-language-code", type=str, help="Target language code (eg. 'en' or 'de').", required=True)
+    parser.add_argument("--source-language-code", type=str, help="Source language code. (eg. 'en' or 'de')", required=True)
+    parser.add_argument("--overwrite-file", help="Prompt to overwrite the xccstrings file.", required=False, default=False, action="store_true")
+    parser.add_argument("--no-cost-prompt", help="Prompt to confirm the cost.", required=False, default=True, action="store_true")
+    args = parser.parse_args()
+
+    translate_xccstrings_file(args.input_file, args.target_language_code, args.source_language_code, args.overwrite_file, args.no_cost_prompt)

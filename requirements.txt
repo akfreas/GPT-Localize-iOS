@@ -1,0 +1,5 @@
+openai==1.8.0
+tqdm==4.66.1
+termcolor==2.4.0
+tiktoken==0.5.2
+argparse
