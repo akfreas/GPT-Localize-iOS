@@ -55,10 +55,10 @@ def chunk_requests(requests, chunk_size):
     for i in range(0, len(requests), chunk_size):
         yield requests[i:i + chunk_size]
 
-def estimate_tokens(data, source_lang, target_lang):
+def estimate_tokens(data, source_lang, target_lang, app_context):
     tokens = []
     for chunk in chunk_requests(data, 10):
-        full_prompt = json.dumps(create_prompt(source_lang, target_lang, chunk))
+        full_prompt = json.dumps(create_prompt(source_lang, target_lang, chunk, app_context))
         encoding = tiktoken.encoding_for_model(model)
         tokens.extend(encoding.encode(full_prompt))
     return len(tokens) * 2 # Account for response tokens
@@ -67,13 +67,9 @@ def calculate_cost(token_count):
     # Calculate the cost based on the token count and cost per token
     return (token_count / 1000) * COST_PER_THOUSAND_TOKENS
 
-def create_prompt(source_lang, target_lang, strings):
+def create_prompt(source_lang, target_lang, strings, app_context):
     serialized = [string.serialize() for string in strings]
 
-    """
-    Creates a prompt for translation based on the source and target languages and the serialized strings.
-    """
-    app_context = ""
     system = f"""
     You are translating strings from an app from {source_lang} to {target_lang}. 
     {app_context}
@@ -89,7 +85,7 @@ def create_prompt(source_lang, target_lang, strings):
     
     return messages
 
-def translate_strings(openai_client, strings, source_lang, target_lang):
+def translate_strings(openai_client, strings, source_lang, target_lang, app_context):
     translations = []
     total_tokens = 0
 
@@ -99,7 +95,7 @@ def translate_strings(openai_client, strings, source_lang, target_lang):
     # Initialize tqdm with a description
     with tqdm(chunks, desc="Translating chunks") as pbar:
         for chunk in pbar:
-            messages = create_prompt(source_lang, target_lang, chunk)
+            messages = create_prompt(source_lang, target_lang, chunk, app_context)
             
             response = openai_client.chat.completions.create(
                 model=model, 
@@ -116,7 +112,7 @@ def translate_strings(openai_client, strings, source_lang, target_lang):
     return translations, total_tokens
 
 # Main function to handle the translation process
-def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_file, no_cost_prompt):
+def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_file, no_cost_prompt, app_context_path):
 
     # Check if OPENAI_API_KEY is set
     if "OPENAI_API_KEY" not in os.environ:
@@ -130,9 +126,36 @@ def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_fi
     openai_client = OpenAI(
         api_key=api_key,
     )
-
+    try:
+        source_language_name = language_names[source_lang]
+    except KeyError:
+        print(colored(f"Source language {source_lang} not supported. Modify the language_names variable in code to add it.", "red"))
+        return
+    try:
+        target_language_name = language_names[target_lang]
+    except KeyError:
+        print(colored(f"Target language {target_lang} not supported. Modify the language_names variable in code to add it.", "red"))
+        return
+    
     with open(input_file, 'r') as file:
         data = json.load(file)
+
+    if app_context_path is None or not os.path.exists(app_context_path):
+        # create a context file from input
+        print(colored(f"App context file not found. Create? [y/n]", "yellow"))
+        response = input()
+        if response.lower() != 'y':
+            print(colored("App context file not found. Add the app context file and try again.", "red"))
+            return
+        else:
+            print(colored("Describe the app you would like to localize. This helps the model understand the context of the strings:", "light_blue"))
+            app_context = input()
+            with open(app_context_path, 'w', encoding='utf-8') as file:
+                file.write(app_context)
+                print(colored(f"Created app context file at {app_context_path}", "green"))
+    else:        
+        with open(app_context_path, 'r', encoding='utf-8') as file:
+            app_context = file.read()
 
     strings_to_translate = []
     paths = []
@@ -141,8 +164,11 @@ def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_fi
     for key, value in data["strings"].items():
         localizations = value["localizations"]
         comment = value.get("comment", "")  
-
+        
         source_localization = localizations.get(source_lang)
+        if source_localization is None:
+            print(colored(f"Source language {source_lang} not found in localization file.", "red"))
+            return
         if target_lang not in localizations.keys():
             if source_localization.get("variations") is None and source_localization.get("stringUnit") is not None:
                 string_value = source_localization.get("stringUnit").get("value")
@@ -160,7 +186,7 @@ def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_fi
         print(colored("No strings to translate!", "green"))
         return
     
-    estimated_tokens = estimate_tokens(strings_to_translate, source_lang, target_lang)
+    estimated_tokens = estimate_tokens(strings_to_translate, source_lang, target_lang, app_context)
     target_file = input_file
     if not overwrite_file and os.path.exists(input_file):
         # prompt to overwrite the file
@@ -178,8 +204,13 @@ def translate_xccstrings_file(input_file, target_lang, source_lang, overwrite_fi
             print("Aborting...")
             return
     
-
-    translated_strings, total_tokens = translate_strings(openai_client, strings_to_translate, language_names[source_lang], language_names[target_lang])
+    translated_strings, total_tokens = translate_strings(
+        openai_client, 
+        strings_to_translate, 
+        source_language_name, 
+        target_language_name, 
+        app_context
+    )
 
     print(colored(f"Total tokens used: {total_tokens}. Cost: ${calculate_cost(total_tokens):.2f}"))
 
@@ -229,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--source-language-code", type=str, help="Source language code. (eg. 'en' or 'de')", required=True)
     parser.add_argument("--overwrite-file", help="Prompt to overwrite the xccstrings file.", required=False, default=False, action="store_true")
     parser.add_argument("--no-cost-prompt", help="Prompt to confirm the cost.", required=False, default=True, action="store_true")
+    parser.add_argument("--app-context-path", help="Path to the app context file.", required=False, default="app_context.txt")
     args = parser.parse_args()
 
-    translate_xccstrings_file(args.input_file, args.target_language_code, args.source_language_code, args.overwrite_file, args.no_cost_prompt)
+    translate_xccstrings_file(args.input_file, args.target_language_code, args.source_language_code, args.overwrite_file, args.no_cost_prompt, args.app_context_path)

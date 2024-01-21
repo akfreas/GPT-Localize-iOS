@@ -9,9 +9,11 @@ GPT-Localize-iOS is a tool designed to automatically translate your `.xcstrings`
 ## Features
 
 - **Multiple Language Support:** Translate your strings into tons of languages in record time
+- **Contextual Translation:** The translation takes into account the comments for your strings and an overall app context string
 - **Multi-Device Translation:** Supports translation of string catalog's device-specific strings
 - **OpenAI GPT-4 Integration:** Utilizes the latest GPT-4 model for accurate and contextual translations.
 - **Cost Estimation:** Provides an estimate of the translation cost before proceeding.
+
 
 ## Prerequisites
 
@@ -19,6 +21,19 @@ To use GPT-Localize-iOS, you must set up an OpenAI API key. Here's how to do it:
 
 1. Visit [OpenAI's API](https://openai.com/api/) page and sign up for an API key.
 2. Once you have your API key, you can set it as an environment variable `OPENAI_API_KEY` on your system. Alternatively, the script will prompt you to enter it when needed.
+
+Ideally, you should have comments added for each localization key. This will greatly help GPT to understand what you are trying to achieve with each string, and will improve the outcome of the translation.
+
+## Getting started
+
+### Recommended: Use venv or virtualenv
+
+Set up a virtual environment with venv or virtualenv first to isolate your dependencies.
+
+### Install dependencies
+
+Run `pip install -r requirements.txt` to install the necessary requirements.
+
 
 ## Usage
 
@@ -35,6 +50,7 @@ python3 translate_strings.py --input-file=path/to/your/file.xcstrings --target-l
 - `--source-language-code`: The source language code of your strings (e.g., 'en' for English).
 - `--overwrite-file`: (Optional) If set, the script will overwrite the original file with the translations.
 - `--no-cost-prompt`: (Optional) If set to false, the script will prompt you for confirmation before proceeding with the translation, based on the estimated cost.
+- `--app-context-path`: (Optional) Information about the app being translated in order to provide the best translation quality.
 
 ## Additional Resources
 
