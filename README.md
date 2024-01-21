@@ -4,11 +4,12 @@
 
 ## Reach more users for your app with localization!
 
-GPT-Localize-iOS is a powerful tool designed to translate your `.xcstrings` files into any language, using the power and cost-effectiveness of OpenAI's GPT-4 API. This script can even handle translations tailored to various devices, ensuring your iOS app localization is seamless and accurate.
+GPT-Localize-iOS is a tool designed to automatically translate your `.xcstrings` files into any language, using the power and cost-effectiveness of OpenAI's GPT-4 API. This script can even handle translations tailored to various devices, ensuring your iOS app localization is seamless and accurate.
 
 ## Features
 
-- **Multiple Language Support:** Translate your strings into tons of languages with support for device-specific variations.
+- **Multiple Language Support:** Translate your strings into tons of languages in record time
+- **Multi-Device Translation:** Supports translation of string catalog's device-specific strings
 - **OpenAI GPT-4 Integration:** Utilizes the latest GPT-4 model for accurate and contextual translations.
 - **Cost Estimation:** Provides an estimate of the translation cost before proceeding.
 
